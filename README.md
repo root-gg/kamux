@@ -1,4 +1,6 @@
+[![GoDoc](https://godoc.org/github.com/root-gg/kamux?status.svg)](https://godoc.org/github.com/root-gg/kamux)
 [![Go Report Card](https://goreportcard.com/badge/github.com/root-gg/kamux)](https://goreportcard.com/report/github.com/root-gg/kamux)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Kamux
 ============
