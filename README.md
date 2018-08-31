@@ -1,3 +1,5 @@
+[![Go Report Card](https://goreportcard.com/badge/github.com/root-gg/kamux)](https://goreportcard.com/report/github.com/root-gg/kamux)
+
 Kamux
 ============
 
