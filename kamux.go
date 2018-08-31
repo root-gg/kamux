@@ -111,6 +111,7 @@ func (kamux *Kamux) Launch() (err error) {
 	if !kamux.launched {
 
 		// Init kafka client
+		log.Printf("[KAMUX     ] Connecting on kafka on brokers %v with user %s", kamux.Config.Brokers, kamux.ConsumerConfig.Net.SASL.User)
 		kamux.kafkaClient, err = cluster.NewClient(kamux.Config.Brokers, kamux.ConsumerConfig)
 		if err != nil {
 			kamux.globalLock.Unlock()
@@ -118,6 +119,7 @@ func (kamux *Kamux) Launch() (err error) {
 		}
 
 		// Init kafka consumer
+		log.Printf("[KAMUX     ] Using consumer group %s on topics : %v", kamux.Config.ConsumerGroup, kamux.Config.Topics)
 		kamux.kafkaConsumer, err = cluster.NewConsumerFromClient(kamux.kafkaClient, kamux.Config.ConsumerGroup, kamux.Config.Topics)
 		if err != nil {
 			kamux.globalLock.Unlock()
@@ -213,7 +215,7 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 
 		case notif := <-kamux.kafkaConsumer.Notifications():
 			if notif != nil {
-				log.Printf("[KAMUX     ] Notification: %s on kafka consumer", notif.Type.String())
+				kamux.handleNotification(notif)
 			}
 
 		case sig := <-sigs:
@@ -228,6 +230,46 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 
 		}
 	}
+}
+
+func (kamux *Kamux) handleNotification(notif *cluster.Notification) {
+
+	switch notif.Type {
+	case cluster.RebalanceStart:
+		log.Printf("[KAMUX     ] Rebalance started on this consumer")
+
+	case cluster.RebalanceOK:
+		log.Printf("[KAMUX     ] Rebalance finished on this consumer :")
+
+		// Log claimed topics/partition
+		for topic, partitions := range notif.Claimed {
+			if len(partitions) > 0 {
+				log.Printf("[KAMUX     ] Gained partitions %v on topic %-20s", partitions, topic)
+			}
+		}
+
+		// Log released topics/partition
+		for topic, partitions := range notif.Released {
+			if len(partitions) > 0 {
+				log.Printf("[KAMUX     ] Lost partitions   %v on topic %-20s", partitions, topic)
+			}
+		}
+
+		// Log released topics/partition
+		log.Printf("[KAMUX     ] Reminder, we currently manage :")
+
+		for topic, partitions := range notif.Current {
+			if len(partitions) > 0 {
+				log.Printf("[KAMUX     ] - Partitions %v on topic %-20s", partitions, topic)
+			}
+		}
+
+	case cluster.RebalanceError:
+		log.Printf("[KAMUX     ] Rebalance failed on this consumer")
+
+	}
+
+	return
 }
 
 func (kamux *Kamux) dispatchMessage(consumerMessage *sarama.ConsumerMessage) {
