@@ -13,8 +13,7 @@ It can:
   * Execute the function of your choice (handler)
   * Mark offset or not after handling
   * Listen to SIGINT and stop processing messages gracefully
-  * 
-
+  * Override sarama cluster consumer configuration before Launch()
 
 
 A simple example :
