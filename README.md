@@ -8,6 +8,8 @@ It can:
   * Listen to one or multiple topics on a specific consumer group
   * Execute the function of your choice (handler)
   * Mark offset or not after handling
+  * Listen to SIGINT and stop processing messages gracefully
+  * 
 
 
 

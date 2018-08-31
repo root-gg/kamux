@@ -93,6 +93,15 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 	return
 }
 
+// Launch will begin the processing of the kafka messages
+// It can be launched only once.
+// It will :
+//  	- Connect to kafka using credentials provided in configuration
+//		- Listen to consumer group notifications (rebalance,...)
+//		- Listen to consumer errors, and stop properly in case of one
+//		- Listen to system SIGINT to stop properly
+//		- Dispatch kafka messages on different workers (1 worker per partition)
+//
 func (kamux *Kamux) Launch() (err error) {
 
 	// Launch only once
@@ -125,10 +134,13 @@ func (kamux *Kamux) Launch() (err error) {
 	return
 }
 
+// Stop will stop processing with no error
 func (kamux *Kamux) Stop() error {
 	return kamux.StopWithError(nil)
 }
 
+// StopWithError will stop processing
+// with error passed as argument
 func (kamux *Kamux) StopWithError(err error) error {
 
 	// Launch once
@@ -153,7 +165,7 @@ func (kamux *Kamux) dispatcher() {
 	// and dispatch them to the right worker
 	log.Printf("[SCP       ] Listening to kafka messages...")
 	for consumerMessage := range kamux.kafkaConsumer.Messages() {
-		kamux.DispatchMessage(consumerMessage)
+		kamux.dispatchMessage(consumerMessage)
 	}
 
 	// No more messages from kafka (channel was closed)
@@ -199,7 +211,7 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 	}
 }
 
-func (kamux *Kamux) DispatchMessage(consumerMessage *sarama.ConsumerMessage) {
+func (kamux *Kamux) dispatchMessage(consumerMessage *sarama.ConsumerMessage) {
 
 	// Create worker if it does not exists yet
 	if kamux.workers[consumerMessage.Partition] == nil {
