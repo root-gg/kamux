@@ -5,7 +5,7 @@ Kamux is a simple library to interact with a Kafka cluster.
 
 It can:
   * Connect with a kafka cluster (Only SASL/TLS with user/password)
-  * Listen to one or multiple topics on a specifi consumer group
+  * Listen to one or multiple topics on a specific consumer group
   * Execute the function of your choice (handler)
   * Mark offset or not after handling
 
