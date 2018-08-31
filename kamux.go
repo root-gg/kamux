@@ -52,6 +52,7 @@ type Kamux struct {
 	workers       map[int32]*KamuxWorker
 	waitGroup     *sync.WaitGroup
 	launched      bool
+	err           error
 }
 
 // NewKamux is the constructor of the ConsumerProducer
@@ -129,6 +130,14 @@ func (kamux *Kamux) Launch() (err error) {
 
 		// Listen events
 		kamux.dispatcher()
+
+		// Wait for all workers to be fully closed
+		log.Printf("[KAMUX     ] Waiting all workers to finish...")
+		kamux.waitGroup.Wait()
+		log.Printf("[KAMUX     ] Kamux is now fully stopped")
+
+		// Return global kamux err
+		return kamux.err
 	}
 
 	return
@@ -147,33 +156,33 @@ func (kamux *Kamux) StopWithError(err error) error {
 	kamux.globalLock.Lock()
 	defer kamux.globalLock.Unlock()
 
+	// Set error
+	kamux.err = err
+
 	// Stop consumer : no more messages to be available
-	kamux.kafkaConsumer.Close()
+	err = kamux.kafkaConsumer.Close()
+	if err != nil {
+		return err
+	}
 
-	// Wait for all workers to be fully closed
-	log.Printf("[SCP       ] Waiting all workers to finish...")
-	kamux.waitGroup.Wait()
-
-	// Return err passed as argument
-	log.Printf("[SCP       ] Kamux is now fully stopped")
-	return err
+	return nil
 }
 
 func (kamux *Kamux) dispatcher() {
 
 	// Iterate on main kafka messages channel
 	// and dispatch them to the right worker
-	log.Printf("[SCP       ] Listening to kafka messages...")
+	log.Printf("[KAMUX     ] Listening to kafka messages...")
 	for consumerMessage := range kamux.kafkaConsumer.Messages() {
 		kamux.dispatchMessage(consumerMessage)
 	}
 
 	// No more messages from kafka (channel was closed)
 	// We can stop workers
-	log.Printf("[SCP       ] No more messages on consumer, closing workers properly...")
+	log.Printf("[KAMUX     ] No more messages on consumer, closing workers properly...")
 
 	for partition, worker := range kamux.workers {
-		log.Printf("[SCP       ] Closing worker on partition %d", partition)
+		log.Printf("[KAMUX     ] Closing worker on partition %d", partition)
 		worker.Stop()
 	}
 
@@ -192,19 +201,29 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 
 		case err := <-kamux.kafkaConsumer.Errors():
 			if err != nil {
-				log.Printf("[SCP       ] Error on kafka consumer : %s", err)
-				kamux.StopWithError(err)
+				log.Printf("[KAMUX     ] Error on kafka consumer : %s", err)
+
+				err = kamux.StopWithError(err)
+				if err != nil {
+					log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
+				}
+
 				return
 			}
 
 		case notif := <-kamux.kafkaConsumer.Notifications():
 			if notif != nil {
-				log.Printf("[SCP       ] Notification: %s on kafka consumer", notif.Type.String())
+				log.Printf("[KAMUX     ] Notification: %s on kafka consumer", notif.Type.String())
 			}
 
 		case sig := <-sigs:
-			log.Printf("[SCP       ] Got a %s signal. Stopping gracefully....", sig)
-			kamux.Stop()
+			log.Printf("[KAMUX     ] Got a %s signal. Stopping gracefully....", sig)
+
+			err := kamux.Stop()
+			if err != nil {
+				log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
+			}
+
 			return
 
 		}
