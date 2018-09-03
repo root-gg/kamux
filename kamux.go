@@ -145,6 +145,20 @@ func (kamux *Kamux) Launch() (err error) {
 	return
 }
 
+// MarkOffset exposal of kamux kafka consumer
+// Could be useful if you want to do extra stuff beside handler
+func (kamux *Kamux) MarkOffset(msg *sarama.ConsumerMessage, metadata string) {
+	kamux.kafkaConsumer.MarkOffset(msg, metadata)
+	return
+}
+
+// MarkOffsets exposal of kamux kafka consumer
+// Could be useful if you want to do extra stuff beside handler
+func (kamux *Kamux) MarkOffsets(s *cluster.OffsetStash) {
+	kamux.kafkaConsumer.MarkOffsets(s)
+	return
+}
+
 // Stop will stop processing with no error
 func (kamux *Kamux) Stop() error {
 	return kamux.StopWithError(nil)
