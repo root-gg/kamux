@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/Shopify/sarama"
 	cluster "github.com/bsm/sarama-cluster"
@@ -36,7 +37,7 @@ type Config struct {
 	Handler       func(*sarama.ConsumerMessage) error
 	StopOnError   bool
 	MarkOffsets   bool
-	Debug         string
+	Debug         bool
 }
 
 // Kamux is the main object
@@ -152,6 +153,26 @@ func (kamux *Kamux) MarkOffset(msg *sarama.ConsumerMessage, metadata string) {
 	return
 }
 
+// Stats will output a summary of the Kamux state
+func (kamux *Kamux) Stats() {
+
+	kamux.globalLock.Lock()
+	defer kamux.globalLock.Unlock()
+
+	log.Printf("[KAMUX     ] Kamux live statistics : ")
+
+	totalProcessed := int64(0)
+	for partition, worker := range kamux.workers {
+
+		totalProcessed += worker.MessagesProcessed()
+		log.Printf("[KAMUX     ]  - Worker %d	: %d events/s (total proccessed : %d)", partition, worker.MessagesPerSecond(), worker.MessagesProcessed())
+	}
+
+	log.Printf("[KAMUX     ] Total messages processed : %d", totalProcessed)
+
+	return
+}
+
 // MarkOffsets exposal of kamux kafka consumer
 // Could be useful if you want to do extra stuff beside handler
 func (kamux *Kamux) MarkOffsets(s *cluster.OffsetStash) {
@@ -231,6 +252,11 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 			if notif != nil {
 				kamux.handleNotification(notif)
 			}
+
+		case <-time.After(time.Second * 5):
+
+			// Stats O'Clock !
+			kamux.Stats()
 
 		case sig := <-sigs:
 			log.Printf("[KAMUX     ] Got a %s signal. Stopping gracefully....", sig)

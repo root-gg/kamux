@@ -3,6 +3,7 @@ package kamux
 import (
 	"log"
 	"sync"
+	"time"
 
 	"github.com/Shopify/sarama"
 )
@@ -11,11 +12,12 @@ import (
 // It will process messages from the given partition sent by the parent
 // SaramaConsumerProducer class
 type KamuxWorker struct {
-	workQueue       chan *sarama.ConsumerMessage
-	messagesTreated int64
-	wg              *sync.WaitGroup
-	parent          *Kamux
-	lastOffset      int64
+	workQueue         chan *sarama.ConsumerMessage
+	messagesTreated   int64
+	wg                *sync.WaitGroup
+	parent            *Kamux
+	lastOffset        int64
+	messagesPerSecond int64
 }
 
 // NewKamuxWorker creates a new workerand link it to
@@ -29,6 +31,19 @@ func NewKamuxWorker(parentKamux *Kamux) (pw *KamuxWorker) {
 
 	// Auto-launch
 	go pw.EventDispatcher()
+
+	// Stats
+	go func() {
+
+		var lastMessagesTreated int64
+		for {
+
+			// Compute messages/second on this worker
+			pw.messagesPerSecond = pw.messagesTreated - lastMessagesTreated
+			lastMessagesTreated = pw.messagesTreated
+			time.Sleep(time.Second)
+		}
+	}()
 
 	return
 }
@@ -73,6 +88,11 @@ func (pw *KamuxWorker) Enqueue(cm *sarama.ConsumerMessage) {
 // this worker since startup
 func (pw *KamuxWorker) MessagesProcessed() int64 {
 	return pw.messagesTreated
+}
+
+// MessagesPerSecond returns the current speed of the worker
+func (pw *KamuxWorker) MessagesPerSecond() int64 {
+	return pw.messagesPerSecond
 }
 
 // Stop is a synchronous function that will stop
