@@ -26,8 +26,20 @@ import (
 
 */
 
-// Config is the configuration
-// of the Kamux class.
+// Config is the configuration of the Kamux class.
+//
+// Brokers : List of kafka brokers to connect to
+// User : Kafka user
+// Password : Kafka password
+// Topics : List of topics to get messages
+// ConsumerGroup : Name of the consumer group to use
+// Handler : Function executed on each kafka message
+// PreRun : Function executed before the launch on processing
+// PostRun : Function executed on kamux close
+// StopOnError : Whether or not to stop processing on handler error
+// MarkOffsets : Whether or not to mark offsets on each message processing
+// Debug : Enable debug mode, more verbose output
+//
 type Config struct {
 	Brokers       []string
 	User          string
@@ -35,6 +47,8 @@ type Config struct {
 	Topics        []string
 	ConsumerGroup string
 	Handler       func(*sarama.ConsumerMessage) error
+	PreRun        func(*Kamux) error
+	PostRun       func(*Kamux) error
 	StopOnError   bool
 	MarkOffsets   bool
 	Debug         bool
@@ -111,6 +125,18 @@ func (kamux *Kamux) Launch() (err error) {
 
 	if !kamux.launched {
 
+		// PreRun
+		if kamux.Config.PreRun != nil {
+
+			log.Printf("[KAMUX     ] Executing PreRun function defined in configuration")
+
+			err = kamux.Config.PreRun(kamux)
+			if err != nil {
+				log.Printf("[KAMUX     ] Fail to exec PreRun function : %s", err)
+				return err
+			}
+		}
+
 		// Init kafka client
 		log.Printf("[KAMUX     ] Connecting on kafka on brokers %v with user %s", kamux.Config.Brokers, kamux.ConsumerConfig.Net.SASL.User)
 		kamux.kafkaClient, err = cluster.NewClient(kamux.Config.Brokers, kamux.ConsumerConfig)
@@ -132,10 +158,12 @@ func (kamux *Kamux) Launch() (err error) {
 		kamux.globalLock.Unlock()
 
 		// Listen events
-		kamux.dispatcher()
+		err = kamux.dispatcher()
+		if err != nil {
+			return
+		}
 
 		// Wait for all workers to be fully closed
-		log.Printf("[KAMUX     ] Waiting all workers to finish...")
 		kamux.waitGroup.Wait()
 		log.Printf("[KAMUX     ] Kamux is now fully stopped")
 
@@ -205,7 +233,7 @@ func (kamux *Kamux) StopWithError(err error) error {
 	return nil
 }
 
-func (kamux *Kamux) dispatcher() {
+func (kamux *Kamux) dispatcher() (err error) {
 
 	// Iterate on main kafka messages channel
 	// and dispatch them to the right worker
@@ -221,6 +249,18 @@ func (kamux *Kamux) dispatcher() {
 	for partition, worker := range kamux.workers {
 		log.Printf("[KAMUX     ] Closing worker on partition %d", partition)
 		worker.Stop()
+	}
+
+	// Exec PostRun
+	if kamux.Config.PostRun != nil {
+
+		log.Printf("[KAMUX     ] Executing PostRun function defined in configuration")
+
+		err = kamux.Config.PostRun(kamux)
+		if err != nil {
+			log.Printf("[KAMUX     ] Fail to exec PostRun function : %s", err)
+			return err
+		}
 	}
 
 	return
@@ -256,7 +296,9 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 		case <-time.After(time.Second * 5):
 
 			// Stats O'Clock !
-			kamux.Stats()
+			if kamux.Config.Debug {
+				kamux.Stats()
+			}
 
 		case sig := <-sigs:
 			log.Printf("[KAMUX     ] Got a %s signal. Stopping gracefully....", sig)

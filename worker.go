@@ -3,6 +3,7 @@ package kamux
 import (
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Shopify/sarama"
@@ -39,8 +40,8 @@ func NewKamuxWorker(parentKamux *Kamux) (pw *KamuxWorker) {
 		for {
 
 			// Compute messages/second on this worker
-			pw.messagesPerSecond = pw.messagesTreated - lastMessagesTreated
-			lastMessagesTreated = pw.messagesTreated
+			atomic.StoreInt64(&pw.messagesPerSecond, atomic.LoadInt64(&pw.messagesTreated)-lastMessagesTreated)
+			lastMessagesTreated = atomic.LoadInt64(&pw.messagesTreated)
 			time.Sleep(time.Second)
 		}
 	}()
@@ -62,7 +63,7 @@ func (pw *KamuxWorker) EventDispatcher() {
 		}
 
 		// Increment messages treated
-		pw.messagesTreated++
+		atomic.AddInt64(&pw.messagesTreated, 1)
 		pw.lastOffset = message.Offset
 
 		// Markoffset if user wants to
@@ -87,12 +88,12 @@ func (pw *KamuxWorker) Enqueue(cm *sarama.ConsumerMessage) {
 // MessagesProcessed returns the number of message treated by
 // this worker since startup
 func (pw *KamuxWorker) MessagesProcessed() int64 {
-	return pw.messagesTreated
+	return atomic.LoadInt64(&pw.messagesTreated)
 }
 
 // MessagesPerSecond returns the current speed of the worker
 func (pw *KamuxWorker) MessagesPerSecond() int64 {
-	return pw.messagesPerSecond
+	return atomic.LoadInt64(&pw.messagesPerSecond)
 }
 
 // Stop is a synchronous function that will stop
