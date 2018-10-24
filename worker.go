@@ -3,6 +3,8 @@ package kamux
 import (
 	"log"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/Shopify/sarama"
 )
@@ -11,11 +13,12 @@ import (
 // It will process messages from the given partition sent by the parent
 // SaramaConsumerProducer class
 type KamuxWorker struct {
-	workQueue       chan *sarama.ConsumerMessage
-	messagesTreated int64
-	wg              *sync.WaitGroup
-	parent          *Kamux
-	lastOffset      int64
+	workQueue         chan *sarama.ConsumerMessage
+	messagesTreated   int64
+	wg                *sync.WaitGroup
+	parent            *Kamux
+	lastOffset        int64
+	messagesPerSecond int64
 }
 
 // NewKamuxWorker creates a new workerand link it to
@@ -29,6 +32,19 @@ func NewKamuxWorker(parentKamux *Kamux) (pw *KamuxWorker) {
 
 	// Auto-launch
 	go pw.EventDispatcher()
+
+	// Stats
+	go func() {
+
+		var lastMessagesTreated int64
+		for {
+
+			// Compute messages/second on this worker
+			atomic.StoreInt64(&pw.messagesPerSecond, atomic.LoadInt64(&pw.messagesTreated)-lastMessagesTreated)
+			lastMessagesTreated = atomic.LoadInt64(&pw.messagesTreated)
+			time.Sleep(time.Second)
+		}
+	}()
 
 	return
 }
@@ -47,7 +63,7 @@ func (pw *KamuxWorker) EventDispatcher() {
 		}
 
 		// Increment messages treated
-		pw.messagesTreated++
+		atomic.AddInt64(&pw.messagesTreated, 1)
 		pw.lastOffset = message.Offset
 
 		// Markoffset if user wants to
@@ -72,7 +88,12 @@ func (pw *KamuxWorker) Enqueue(cm *sarama.ConsumerMessage) {
 // MessagesProcessed returns the number of message treated by
 // this worker since startup
 func (pw *KamuxWorker) MessagesProcessed() int64 {
-	return pw.messagesTreated
+	return atomic.LoadInt64(&pw.messagesTreated)
+}
+
+// MessagesPerSecond returns the current speed of the worker
+func (pw *KamuxWorker) MessagesPerSecond() int64 {
+	return atomic.LoadInt64(&pw.messagesPerSecond)
 }
 
 // Stop is a synchronous function that will stop
