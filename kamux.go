@@ -190,14 +190,17 @@ func (kamux *Kamux) Stats() {
 	log.Printf("[KAMUX     ] Kamux live statistics : ")
 
 	totalProcessed := int64(0)
+	totalSpeed := int64(0)
+
 	for partition, worker := range kamux.workers {
 
 		totalProcessed += worker.MessagesProcessed()
+		totalSpeed += worker.MessagesPerSecond()
 		log.Printf("[KAMUX     ]  - Worker %d	: %d events/s (total proccessed : %d)", partition, worker.MessagesPerSecond(), worker.MessagesProcessed())
 	}
 
 	log.Printf("[KAMUX     ] Total messages processed : %d", totalProcessed)
-
+	log.Printf("[KAMUX     ] Processing : %d messages/s", totalSpeed)
 	return
 }
 
