@@ -56,6 +56,10 @@ func (pw *KamuxWorker) EventDispatcher() {
 	for message := range pw.workQueue {
 		// Exec handler
 		err := pw.parent.Config.Handler(message)
+		if err != nil && pw.parent.Config.ErrHandler != nil {
+			// Lets trying to rescue the error.
+			err = pw.parent.Config.ErrHandler(err, message)
+		}
 		if err != nil {
 			log.Printf("[SCP       ] Error handling message : %s", err)
 			pw.parent.StopWithError(err)
