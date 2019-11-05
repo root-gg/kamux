@@ -34,6 +34,7 @@ import (
 // Topics : List of topics to get messages
 // ConsumerGroup : Name of the consumer group to use
 // Handler : Function executed on each kafka message
+// ErrHandler : Function executed on Handler error used to trying to rescue the error
 // PreRun : Function executed before the launch on processing
 // PostRun : Function executed on kamux close
 // StopOnError : Whether or not to stop processing on handler error
@@ -47,6 +48,7 @@ type Config struct {
 	Topics        []string
 	ConsumerGroup string
 	Handler       func(*sarama.ConsumerMessage) error
+	ErrHandler    func(error, *sarama.ConsumerMessage) error
 	PreRun        func(*Kamux) error
 	PostRun       func(*Kamux) error
 	StopOnError   bool
