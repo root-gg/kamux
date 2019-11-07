@@ -8,4 +8,5 @@ require (
 	github.com/klauspost/cpuid v1.2.1 // indirect
 	github.com/onsi/ginkgo v1.10.3 // indirect
 	github.com/onsi/gomega v1.7.1 // indirect
+	github.com/robfig/cron/v3 v3.0.0
 )

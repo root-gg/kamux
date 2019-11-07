@@ -18,6 +18,7 @@ type KamuxWorker struct {
 	wg                *sync.WaitGroup
 	parent            *Kamux
 	lastOffset        int64
+	lastMessageDate   time.Time
 	messagesPerSecond int64
 }
 
@@ -69,6 +70,7 @@ func (pw *KamuxWorker) EventDispatcher() {
 		// Increment messages treated
 		atomic.AddInt64(&pw.messagesTreated, 1)
 		pw.lastOffset = message.Offset
+		pw.lastMessageDate = time.Now()
 
 		// Markoffset if user wants to
 		if pw.parent.Config.MarkOffsets {
@@ -98,6 +100,12 @@ func (pw *KamuxWorker) MessagesProcessed() int64 {
 // MessagesPerSecond returns the current speed of the worker
 func (pw *KamuxWorker) MessagesPerSecond() int64 {
 	return atomic.LoadInt64(&pw.messagesPerSecond)
+}
+
+// LastMessageDate returns the date of the last
+// processed message of the worker
+func (pw *KamuxWorker) LastMessageDate() time.Time {
+	return pw.lastMessageDate
 }
 
 // Stop is a synchronous function that will stop
