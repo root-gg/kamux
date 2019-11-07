@@ -11,6 +11,7 @@ import (
 
 	"github.com/Shopify/sarama"
 	cluster "github.com/bsm/sarama-cluster"
+	cron "github.com/robfig/cron/v3"
 )
 
 /*
@@ -42,18 +43,19 @@ import (
 // Debug : Enable debug mode, more verbose output
 //
 type Config struct {
-	Brokers       []string
-	User          string
-	Password      string
-	Topics        []string
-	ConsumerGroup string
-	Handler       func(*sarama.ConsumerMessage) error
-	ErrHandler    func(error, *sarama.ConsumerMessage) error
-	PreRun        func(*Kamux) error
-	PostRun       func(*Kamux) error
-	StopOnError   bool
-	MarkOffsets   bool
-	Debug         bool
+	Brokers           []string
+	User              string
+	Password          string
+	Topics            []string
+	ConsumerGroup     string
+	Handler           func(*sarama.ConsumerMessage) error
+	ErrHandler        func(error, *sarama.ConsumerMessage) error
+	PreRun            func(*Kamux) error
+	PostRun           func(*Kamux) error
+	StopOnError       bool
+	MarkOffsets       bool
+	Debug             bool
+	RemoveIdleWorkers bool
 }
 
 // Kamux is the main object
@@ -154,6 +156,14 @@ func (kamux *Kamux) Launch() (err error) {
 			kamux.globalLock.Unlock()
 			return
 		}
+
+		// Setup cron routines
+		c := cron.New()
+		c.AddFunc("@every 1m", kamux.Stats)
+		if kamux.Config.RemoveIdleWorkers {
+			c.AddFunc("@every 5m", kamux.removeIdleWorkers)
+		}
+		c.Start()
 
 		go kamux.handleErrorsAndNotifications()
 		kamux.launched = true
@@ -298,13 +308,6 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 				kamux.handleNotification(notif)
 			}
 
-		case <-time.After(time.Second * 5):
-
-			// Stats O'Clock !
-			if kamux.Config.Debug {
-				kamux.Stats()
-			}
-
 		case sig := <-sigs:
 			log.Printf("[KAMUX     ] Got a %s signal. Stopping gracefully....", sig)
 
@@ -369,4 +372,28 @@ func (kamux *Kamux) dispatchMessage(consumerMessage *sarama.ConsumerMessage) {
 
 	// Enqueue message in the partition worker
 	kamux.workers[consumerMessage.Partition].Enqueue(consumerMessage)
+}
+
+// removeIdleWorkers will stop workers which
+// did not process messages since long time
+func (kamux *Kamux) removeIdleWorkers() {
+
+	for partition, worker := range kamux.workers {
+
+		if time.Since(worker.LastMessageDate()) > time.Minute {
+
+			kamux.globalLock.Lock()
+
+			// Stop worker
+			worker.Stop()
+
+			// Remove it from kamux
+			log.Printf("[KAMUX     ] Removing idle worker on partition %d", partition)
+			delete(kamux.workers, partition)
+
+			kamux.globalLock.Unlock()
+		}
+	}
+
+	return
 }
