@@ -63,7 +63,9 @@ func (pw *KamuxWorker) EventDispatcher() {
 		}
 		if err != nil {
 			log.Printf("[SCP       ] Error handling message : %s", err)
-			pw.parent.StopWithError(err)
+			if pw.parent.Config.StopOnError {
+				pw.parent.StopWithError(err)
+			}
 			break
 		}
 
