@@ -26,7 +26,7 @@ type KamuxWorker struct {
 // it's SaramaConsumerProducer parent
 func NewKamuxWorker(parentKamux *Kamux) (pw *KamuxWorker) {
 	pw = new(KamuxWorker)
-	pw.workQueue = make(chan *sarama.ConsumerMessage, 10000)
+	pw.workQueue = make(chan *sarama.ConsumerMessage, parentKamux.Config.MessagesBufferSize)
 	pw.wg = new(sync.WaitGroup)
 	pw.wg.Add(1)
 	pw.parent = parentKamux
@@ -81,8 +81,6 @@ func (pw *KamuxWorker) EventDispatcher() {
 	// Work is done
 	pw.wg.Done()
 	pw.parent.waitGroup.Done()
-
-	return
 }
 
 // Enqueue will enqueue a sarama consumer message in the
@@ -112,12 +110,9 @@ func (pw *KamuxWorker) LastMessageDate() time.Time {
 // the worker processing, and will wait for the remaining messages
 // to be treated
 func (pw *KamuxWorker) Stop() {
-
 	// We close channel
 	close(pw.workQueue)
 
 	// We wait
 	pw.wg.Wait()
-
-	return
 }

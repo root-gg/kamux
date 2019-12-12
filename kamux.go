@@ -27,35 +27,36 @@ import (
 
 */
 
-// Config is the configuration of the Kamux class.
-//
-// Brokers : List of kafka brokers to connect to
-// User : Kafka user
-// Password : Kafka password
-// Topics : List of topics to get messages
-// ConsumerGroup : Name of the consumer group to use
-// Handler : Function executed on each kafka message
-// ErrHandler : Function executed on Handler's error used to trying to rescue the error
-// PreRun : Function executed before the launch on processing
-// PostRun : Function executed on kamux close
-// StopOnError : Whether or not to stop processing on handler error
-// MarkOffsets : Whether or not to mark offsets on each message processing
-// Debug : Enable debug mode, more verbose output
-//
+// A Config holds all the configuration of the Kamux class.
 type Config struct {
-	Brokers           []string
-	User              string
-	Password          string
-	Topics            []string
-	ConsumerGroup     string
-	Handler           func(*sarama.ConsumerMessage) error
-	ErrHandler        func(error, *sarama.ConsumerMessage) error
-	PreRun            func(*Kamux) error
-	PostRun           func(*Kamux) error
-	StopOnError       bool
-	MarkOffsets       bool
-	Debug             bool
+	// Brokers defines the list of kafka brokers to connect to.
+	Brokers []string
+	// User is the Kafka's user.
+	User string
+	// Password is the Kafka's password.
+	Password string
+	// Topics are all the topics on which consumer groups listen.
+	Topics []string
+	// ConsumerGroup is the name of the consumer group to use.
+	ConsumerGroup string
+	// Handler is the function executed on each kafka message.
+	Handler func(*sarama.ConsumerMessage) error
+	// ErrHandler is the function executed on Handler's error used to trying to rescue the error.
+	ErrHandler func(error, *sarama.ConsumerMessage) error
+	// PreRun is the function executed before the launch on processing.
+	PreRun func(*Kamux) error
+	// PostRun is the function executed on kamux close.
+	PostRun func(*Kamux) error
+	// StopOnError, whether or not to stop processing on handler error.
+	StopOnError bool
+	// MarkOffsets, whether or not to mark offsets on each message processing.
+	MarkOffsets bool
+	// Debug enables debug mode, more verbose output
+	Debug bool
+	// RemoveIdleWorkers removes workers which did not process messages since long time
 	RemoveIdleWorkers bool
+	// MessagesBufferSize is the buffer size of the messages that a worker can queue.
+	MessagesBufferSize int
 }
 
 // Kamux is the main object
@@ -94,6 +95,9 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 	}
 	if config.Handler == nil {
 		return nil, errors.New("Kamux: no handler specified")
+	}
+	if config.MessagesBufferSize == 0 {
+		config.MessagesBufferSize = 10000
 	}
 
 	// Init object with configuration
@@ -239,12 +243,14 @@ func (kamux *Kamux) StopWithError(err error) error {
 	// Set error
 	kamux.err = err
 
-	// Stop consumer : no more messages to be available
+	// Stop consumer: no more messages to be available
 	err = kamux.kafkaConsumer.Close()
 	if err != nil {
 		return err
 	}
 
+	// Wait for all workers to be fully closed
+	kamux.waitGroup.Wait()
 	return nil
 }
 
@@ -317,7 +323,6 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 			}
 
 			return
-
 		}
 	}
 }
@@ -358,8 +363,6 @@ func (kamux *Kamux) handleNotification(notif *cluster.Notification) {
 		log.Printf("[KAMUX     ] Rebalance failed on this consumer")
 
 	}
-
-	return
 }
 
 func (kamux *Kamux) dispatchMessage(consumerMessage *sarama.ConsumerMessage) {
@@ -394,6 +397,4 @@ func (kamux *Kamux) removeIdleWorkers() {
 			kamux.globalLock.Unlock()
 		}
 	}
-
-	return
 }
