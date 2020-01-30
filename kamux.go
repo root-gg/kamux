@@ -1,17 +1,15 @@
 package kamux
 
 import (
+	"context"
 	"errors"
 	"log"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/Shopify/sarama"
-	cluster "github.com/bsm/sarama-cluster"
-	cron "github.com/robfig/cron/v3"
 )
 
 /*
@@ -53,24 +51,22 @@ type Config struct {
 	MarkOffsets bool
 	// Debug enables debug mode, more verbose output
 	Debug bool
-	// RemoveIdleWorkers removes workers which did not process messages since long time
-	RemoveIdleWorkers bool
 	// MessagesBufferSize is the buffer size of the messages that a worker can queue.
 	MessagesBufferSize int
+	// ForceKafkaVersion overrides kafka cluster version on sarama library
+	ForceKafkaVersion *sarama.KafkaVersion
 }
 
 // Kamux is the main object
 // for the Kamux
 type Kamux struct {
 	Config         *Config
-	ConsumerConfig *cluster.Config
+	ConsumerConfig *sarama.Config
 
 	// Internal stuff
 	globalLock    *sync.RWMutex
-	kafkaClient   *cluster.Client
-	kafkaConsumer *cluster.Consumer
-	workers       map[int32]*KamuxWorker
-	waitGroup     *sync.WaitGroup
+	kafkaClient   sarama.Client
+	kafkaConsumer sarama.ConsumerGroup
 	launched      bool
 	err           error
 }
@@ -103,16 +99,19 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 	// Init object with configuration
 	kamux = new(Kamux)
 	kamux.Config = config
-	kamux.ConsumerConfig = cluster.NewConfig()
+	kamux.ConsumerConfig = sarama.NewConfig()
+	kamux.ConsumerConfig.ChannelBufferSize = config.MessagesBufferSize
 	kamux.ConsumerConfig.Net.SASL.Enable = true
 	kamux.ConsumerConfig.Net.SASL.User = kamux.Config.User
 	kamux.ConsumerConfig.Net.SASL.Password = kamux.Config.Password
 	kamux.ConsumerConfig.Net.TLS.Enable = true
 	kamux.ConsumerConfig.Consumer.Return.Errors = true
-	kamux.ConsumerConfig.Group.Return.Notifications = true
 	kamux.globalLock = new(sync.RWMutex)
-	kamux.workers = make(map[int32]*KamuxWorker)
-	kamux.waitGroup = new(sync.WaitGroup)
+
+	// Force kafka version
+	if kamux.Config.ForceKafkaVersion != nil {
+		kamux.ConsumerConfig.Version = *kamux.Config.ForceKafkaVersion
+	}
 
 	return
 }
@@ -124,7 +123,6 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 //		- Listen to consumer group notifications (rebalance,...)
 //		- Listen to consumer errors, and stop properly in case of one
 //		- Listen to system SIGINT to stop properly
-//		- Dispatch kafka messages on different workers (1 worker per partition)
 //
 func (kamux *Kamux) Launch() (err error) {
 
@@ -147,7 +145,7 @@ func (kamux *Kamux) Launch() (err error) {
 
 		// Init kafka client
 		log.Printf("[KAMUX     ] Connecting on kafka on brokers %v with user %s", kamux.Config.Brokers, kamux.ConsumerConfig.Net.SASL.User)
-		kamux.kafkaClient, err = cluster.NewClient(kamux.Config.Brokers, kamux.ConsumerConfig)
+		kamux.kafkaClient, err = sarama.NewClient(kamux.Config.Brokers, kamux.ConsumerConfig)
 		if err != nil {
 			kamux.globalLock.Unlock()
 			return
@@ -155,75 +153,28 @@ func (kamux *Kamux) Launch() (err error) {
 
 		// Init kafka consumer
 		log.Printf("[KAMUX     ] Using consumer group %s on topics : %v", kamux.Config.ConsumerGroup, kamux.Config.Topics)
-		kamux.kafkaConsumer, err = cluster.NewConsumerFromClient(kamux.kafkaClient, kamux.Config.ConsumerGroup, kamux.Config.Topics)
+		kamux.kafkaConsumer, err = sarama.NewConsumerGroupFromClient(kamux.Config.ConsumerGroup, kamux.kafkaClient)
 		if err != nil {
 			kamux.globalLock.Unlock()
 			return
 		}
 
-		// Setup cron routines
-		c := cron.New()
-		c.AddFunc("@every 1m", kamux.Stats)
-		if kamux.Config.RemoveIdleWorkers {
-			c.AddFunc("@every 5m", kamux.removeIdleWorkers)
-		}
-		c.Start()
-
+		// Subscribe to system signals
 		go kamux.handleErrorsAndNotifications()
 		kamux.launched = true
 		kamux.globalLock.Unlock()
 
-		// Listen events
-		err = kamux.dispatcher()
+		// Subscribe to specified topics
+		err = kamux.kafkaConsumer.Consume(context.Background(), kamux.Config.Topics, kamux)
 		if err != nil {
 			return
 		}
 
-		// Wait for all workers to be fully closed
-		kamux.waitGroup.Wait()
-		log.Printf("[KAMUX     ] Kamux is now fully stopped")
-
 		// Return global kamux err
+		log.Printf("[KAMUX     ] Kamux is now fully stopped")
 		return kamux.err
 	}
 
-	return
-}
-
-// MarkOffset exposal of kamux kafka consumer
-// Could be useful if you want to do extra stuff beside handler
-func (kamux *Kamux) MarkOffset(msg *sarama.ConsumerMessage, metadata string) {
-	kamux.kafkaConsumer.MarkOffset(msg, metadata)
-	return
-}
-
-// Stats will output a summary of the Kamux state
-func (kamux *Kamux) Stats() {
-
-	kamux.globalLock.Lock()
-	defer kamux.globalLock.Unlock()
-
-	log.Printf("[KAMUX     ] Kamux live statistics : ")
-
-	totalProcessed := int64(0)
-	totalSpeed := int64(0)
-
-	for partition, worker := range kamux.workers {
-
-		totalProcessed += worker.MessagesProcessed()
-		totalSpeed += worker.MessagesPerSecond()
-		log.Printf("[KAMUX     ]  - Worker %d	: %d events/s (total proccessed : %d)", partition, worker.MessagesPerSecond(), worker.MessagesProcessed())
-	}
-
-	log.Printf("[KAMUX     ] Total messages processed : %d", totalProcessed)
-	log.Printf("[KAMUX     ] Processing : %d messages/s", totalSpeed)
-	return
-}
-
-// MarkOffsets exposal of kamux kafka consumer
-// Could be useful if you want to do extra stuff beside handler
-func (kamux *Kamux) MarkOffsets(s *cluster.OffsetStash) {
-	kamux.kafkaConsumer.MarkOffsets(s)
 	return
 }
 
@@ -244,52 +195,22 @@ func (kamux *Kamux) StopWithError(err error) error {
 	kamux.err = err
 
 	// Stop consumer: no more messages to be available
-	err = kamux.kafkaConsumer.Close()
-	if err != nil {
-		return err
-	}
-
-	// Wait for all workers to be fully closed
-	kamux.waitGroup.Wait()
-	return nil
-}
-
-func (kamux *Kamux) dispatcher() (err error) {
-
-	// Iterate on main kafka messages channel
-	// and dispatch them to the right worker
-	log.Printf("[KAMUX     ] Listening to kafka messages...")
-	for consumerMessage := range kamux.kafkaConsumer.Messages() {
-		kamux.dispatchMessage(consumerMessage)
-	}
-
-	// No more messages from kafka (channel was closed)
-	// We can stop workers
-	log.Printf("[KAMUX     ] No more messages on consumer, closing workers properly...")
-
-	for partition, worker := range kamux.workers {
-		log.Printf("[KAMUX     ] Closing worker on partition %d", partition)
-		worker.Stop()
-	}
-
-	// Exec PostRun
-	if kamux.Config.PostRun != nil {
-
-		log.Printf("[KAMUX     ] Executing PostRun function defined in configuration")
-
-		err = kamux.Config.PostRun(kamux)
+	log.Printf("[KAMUX     ] Closing kafka consumer group")
+	if kamux.kafkaConsumer != nil {
+		err = kamux.kafkaConsumer.Close()
 		if err != nil {
-			log.Printf("[KAMUX     ] Fail to exec PostRun function : %s", err)
 			return err
 		}
 	}
+	log.Printf("[KAMUX     ] -> Success")
 
-	return
+	return nil
 }
 
 func (kamux *Kamux) handleErrorsAndNotifications() {
 
 	// Listen to SIGINT
+	log.Printf("[KAMUX     ] Listening for noifications and system signals")
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT)
 
@@ -309,11 +230,6 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 				return
 			}
 
-		case notif := <-kamux.kafkaConsumer.Notifications():
-			if notif != nil {
-				kamux.handleNotification(notif)
-			}
-
 		case sig := <-sigs:
 			log.Printf("[KAMUX     ] Got a %s signal. Stopping gracefully....", sig)
 
@@ -327,74 +243,67 @@ func (kamux *Kamux) handleErrorsAndNotifications() {
 	}
 }
 
-func (kamux *Kamux) handleNotification(notif *cluster.Notification) {
+//
+//// Kamux class implements interface sarama.ConsumerGroupHandler
+//
 
-	switch notif.Type {
-	case cluster.RebalanceStart:
-		log.Printf("[KAMUX     ] Rebalance started on this consumer")
-
-	case cluster.RebalanceOK:
-		log.Printf("[KAMUX     ] Rebalance finished on this consumer :")
-
-		// Log claimed topics/partition
-		for topic, partitions := range notif.Claimed {
-			if len(partitions) > 0 {
-				log.Printf("[KAMUX     ] Gained partitions %v on topic %-20s", partitions, topic)
-			}
-		}
-
-		// Log released topics/partition
-		for topic, partitions := range notif.Released {
-			if len(partitions) > 0 {
-				log.Printf("[KAMUX     ] Lost partitions   %v on topic %-20s", partitions, topic)
-			}
-		}
-
-		// Log released topics/partition
-		log.Printf("[KAMUX     ] Reminder, we currently manage :")
-
-		for topic, partitions := range notif.Current {
-			if len(partitions) > 0 {
-				log.Printf("[KAMUX     ] - Partitions %v on topic %-20s", partitions, topic)
-			}
-		}
-
-	case cluster.RebalanceError:
-		log.Printf("[KAMUX     ] Rebalance failed on this consumer")
-
-	}
+// Setup is run at the beginning of a new session, before ConsumeClaim.
+func (kamux *Kamux) Setup(sarama.ConsumerGroupSession) (err error) {
+	return nil
 }
 
-func (kamux *Kamux) dispatchMessage(consumerMessage *sarama.ConsumerMessage) {
+// Cleanup is run at the end of a session, once all ConsumeClaim goroutines have exites
+// but before the offsets are committed for the very last time.
+func (kamux *Kamux) Cleanup(sarama.ConsumerGroupSession) (err error) {
 
-	// Create worker if it does not exists yet
-	if kamux.workers[consumerMessage.Partition] == nil {
-		kamux.workers[consumerMessage.Partition] = NewKamuxWorker(kamux)
-		kamux.waitGroup.Add(1)
-	}
+	// Exec PostRun
+	if kamux.Config.PostRun != nil {
 
-	// Enqueue message in the partition worker
-	kamux.workers[consumerMessage.Partition].Enqueue(consumerMessage)
-}
+		log.Printf("[KAMUX     ] Executing PostRun function defined in configuration")
 
-// removeIdleWorkers will stop workers which
-// did not process messages since long time
-func (kamux *Kamux) removeIdleWorkers() {
-
-	for partition, worker := range kamux.workers {
-
-		if time.Since(worker.LastMessageDate()) > time.Minute {
-
-			kamux.globalLock.Lock()
-
-			// Stop worker
-			worker.Stop()
-
-			// Remove it from kamux
-			log.Printf("[KAMUX     ] Removing idle worker on partition %d", partition)
-			delete(kamux.workers, partition)
-
-			kamux.globalLock.Unlock()
+		err = kamux.Config.PostRun(kamux)
+		if err != nil {
+			log.Printf("[KAMUX     ] Fail to exec PostRun function : %s", err)
+			return err
 		}
 	}
+
+	return nil
+}
+
+// ConsumeClaim must start a consumer loop of ConsumerGroupClaim's Messages().
+// Once the Messages() channel is closed, the Handler must finish its processing
+// loop and exit.
+func (kamux *Kamux) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) (err error) {
+
+	// Do not move the code below to a goroutine.
+	// The `ConsumeClaim` itself is called within a goroutine, see:
+	// https://github.com/Shopify/sarama/blob/master/consumer_group.go#L27-L29
+
+	log.Printf("[KAMUX     ] Begin processing on topic %s and partition %d", claim.Topic(), claim.Partition())
+
+	for message := range claim.Messages() {
+
+		// Execute handler
+		err = kamux.Config.Handler(message)
+		if err != nil {
+			if kamux.Config.ErrHandler != nil {
+				err = kamux.Config.ErrHandler(err, message)
+			}
+
+			// Still error after error handler ?
+			if err != nil && kamux.Config.StopOnError {
+				return kamux.StopWithError(err)
+			}
+		}
+
+		// Mark offset if asked
+		if kamux.Config.MarkOffsets {
+			session.MarkMessage(message, "")
+		}
+	}
+
+	log.Printf("[KAMUX     ] Closed processing on topic %s and partition %d", claim.Topic(), claim.Partition())
+
+	return nil
 }
