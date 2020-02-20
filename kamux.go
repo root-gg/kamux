@@ -142,6 +142,7 @@ func (kamux *Kamux) Launch() (err error) {
 		err = kamux.Config.PreRun(kamux)
 		if err != nil {
 			log.Printf("[KAMUX     ] Fail to exec PreRun function : %s", err)
+			kamux.globalLock.Unlock()
 			return err
 		}
 	}
@@ -165,7 +166,7 @@ func (kamux *Kamux) Launch() (err error) {
 	ready := make(chan bool)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	wg := &sync.WaitGroup{}
+	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -181,6 +182,8 @@ func (kamux *Kamux) Launch() (err error) {
 			if ctx.Err() != nil {
 				return
 			}
+
+			// Reallocating the channel unblocks goroutines waiting for it
 			ready = make(chan bool)
 		}
 	}()
@@ -232,7 +235,7 @@ func (kamux *Kamux) StopWithError(err error) error {
 func (kamux *Kamux) handleErrorsAndNotifications(ctx context.Context) {
 
 	// Listen to SIGINT and SIGTERM
-	log.Printf("[KAMUX     ] Listening for noifications and system signals")
+	log.Printf("[KAMUX     ] Listening for notifications and system signals")
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
