@@ -130,6 +130,7 @@ func (kamux *Kamux) Launch() (err error) {
 	kamux.globalLock.Lock()
 
 	if kamux.launched {
+		kamux.globalLock.Unlock()
 		return
 	}
 
