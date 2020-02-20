@@ -129,53 +129,74 @@ func (kamux *Kamux) Launch() (err error) {
 	// Launch only once
 	kamux.globalLock.Lock()
 
-	if !kamux.launched {
-
-		// PreRun
-		if kamux.Config.PreRun != nil {
-
-			log.Printf("[KAMUX     ] Executing PreRun function defined in configuration")
-
-			err = kamux.Config.PreRun(kamux)
-			if err != nil {
-				log.Printf("[KAMUX     ] Fail to exec PreRun function : %s", err)
-				return err
-			}
-		}
-
-		// Init kafka client
-		log.Printf("[KAMUX     ] Connecting on kafka on brokers %v with user %s", kamux.Config.Brokers, kamux.ConsumerConfig.Net.SASL.User)
-		kamux.kafkaClient, err = sarama.NewClient(kamux.Config.Brokers, kamux.ConsumerConfig)
-		if err != nil {
-			kamux.globalLock.Unlock()
-			return
-		}
-
-		// Init kafka consumer
-		log.Printf("[KAMUX     ] Using consumer group %s on topics : %v", kamux.Config.ConsumerGroup, kamux.Config.Topics)
-		kamux.kafkaConsumer, err = sarama.NewConsumerGroupFromClient(kamux.Config.ConsumerGroup, kamux.kafkaClient)
-		if err != nil {
-			kamux.globalLock.Unlock()
-			return
-		}
-
-		// Subscribe to system signals
-		go kamux.handleErrorsAndNotifications()
-		kamux.launched = true
-		kamux.globalLock.Unlock()
-
-		// Subscribe to specified topics
-		err = kamux.kafkaConsumer.Consume(context.Background(), kamux.Config.Topics, kamux)
-		if err != nil {
-			return
-		}
-
-		// Return global kamux err
-		log.Printf("[KAMUX     ] Kamux is now fully stopped")
-		return kamux.err
+	if kamux.launched {
+		return
 	}
 
-	return
+	// PreRun
+	if kamux.Config.PreRun != nil {
+
+		log.Printf("[KAMUX     ] Executing PreRun function defined in configuration")
+
+		err = kamux.Config.PreRun(kamux)
+		if err != nil {
+			log.Printf("[KAMUX     ] Fail to exec PreRun function : %s", err)
+			return err
+		}
+	}
+
+	// Init kafka client
+	log.Printf("[KAMUX     ] Connecting on kafka on brokers %v with user %s", kamux.Config.Brokers, kamux.ConsumerConfig.Net.SASL.User)
+	kamux.kafkaClient, err = sarama.NewClient(kamux.Config.Brokers, kamux.ConsumerConfig)
+	if err != nil {
+		kamux.globalLock.Unlock()
+		return
+	}
+
+	// Init kafka consumer
+	log.Printf("[KAMUX     ] Using consumer group %s on topics : %v", kamux.Config.ConsumerGroup, kamux.Config.Topics)
+	kamux.kafkaConsumer, err = sarama.NewConsumerGroupFromClient(kamux.Config.ConsumerGroup, kamux.kafkaClient)
+	if err != nil {
+		kamux.globalLock.Unlock()
+		return
+	}
+
+	ready := make(chan bool)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			// The "Consume" method should be called inside infinite loop
+			// When a rebalance happens we need to recreate the consumer sessions to get the new claims
+			// See: https://github.com/Shopify/sarama/blob/master/consumer_group.go#L41
+			if err := kamux.kafkaConsumer.Consume(ctx, kamux.Config.Topics, kamux); err != nil {
+				log.Panicf("Error from consumer: %v", err)
+			}
+
+			// check if context was cancelled, signaling that the consumer should stop
+			if ctx.Err() != nil {
+				return
+			}
+			ready = make(chan bool)
+		}
+	}()
+
+	// Wait for the consumer to be ready
+	<-ready
+	kamux.launched = true
+	kamux.globalLock.Unlock()
+	log.Printf("[KAMUX     ] Kamux is now ready. All consumers are started")
+
+	// Handle errors, sigterms and ctx cancellation
+	kamux.handleErrorsAndNotifications(ctx)
+	cancel()
+	wg.Wait()
+
+	log.Printf("[KAMUX     ] Kamux is now fully stopped")
+	return kamux.err
 }
 
 // Stop will stop processing with no error
@@ -207,40 +228,43 @@ func (kamux *Kamux) StopWithError(err error) error {
 	return nil
 }
 
-func (kamux *Kamux) handleErrorsAndNotifications() {
+func (kamux *Kamux) handleErrorsAndNotifications(ctx context.Context) {
 
-	// Listen to SIGINT
+	// Listen to SIGINT and SIGTERM
 	log.Printf("[KAMUX     ] Listening for noifications and system signals")
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	// Event loop
-	for {
-		select {
+	select {
 
-		case err := <-kamux.kafkaConsumer.Errors():
-			if err != nil {
-				log.Printf("[KAMUX     ] Error on kafka consumer : %s", err)
+	case err := <-kamux.kafkaConsumer.Errors():
+		if err != nil {
+			log.Printf("[KAMUX     ] Error on kafka consumer : %s", err)
 
-				err = kamux.StopWithError(err)
-				if err != nil {
-					log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
-				}
-
-				return
-			}
-
-		case sig := <-sigs:
-			log.Printf("[KAMUX     ] Got a %s signal. Stopping gracefully....", sig)
-
-			err := kamux.Stop()
+			err = kamux.StopWithError(err)
 			if err != nil {
 				log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
 			}
 
 			return
 		}
+
+	case sig := <-sigs:
+		log.Printf("[KAMUX     ] Got a %s signal. Stopping gracefully....", sig)
+
+		err := kamux.Stop()
+		if err != nil {
+			log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
+		}
+
+		return
+	case <-ctx.Done():
+		err := kamux.Stop()
+		if err != nil {
+			log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
+		}
 	}
+
 }
 
 //
