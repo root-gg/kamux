@@ -106,6 +106,8 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 	kamux.ConsumerConfig.Net.SASL.Password = kamux.Config.Password
 	kamux.ConsumerConfig.Net.TLS.Enable = true
 	kamux.ConsumerConfig.Consumer.Return.Errors = true
+	// If the user wants kamux to mark offsets after message handling, disable consumer autocommit
+	kamux.ConsumerConfig.Consumer.Offsets.AutoCommit.Enable = !kamux.Config.MarkOffsets
 	kamux.globalLock = new(sync.RWMutex)
 
 	// Force kafka version
