@@ -148,7 +148,7 @@ func (kamux *Kamux) Launch() (err error) {
 
 		err = kamux.Config.PreRun(kamux)
 		if err != nil {
-			log.Printf("[KAMUX] Fail to exec PreRun function : %s", err)
+			kamux.Config.Logger.Printf("[KAMUX] Fail to exec PreRun function : %s", err)
 			kamux.globalLock.Unlock()
 			return err
 		}
