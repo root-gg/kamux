@@ -3,7 +3,6 @@ package kamux
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -100,7 +99,6 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 		config.MessagesBufferSize = 10000
 	}
 	if config.Logger == nil {
-		fmt.Println("HERE")
 		config.Logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
