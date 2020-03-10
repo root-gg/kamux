@@ -53,8 +53,10 @@ type Config struct {
 	Debug bool
 	// MessagesBufferSize is the buffer size of the messages that a worker can queue.
 	MessagesBufferSize int
-	// ForceKafkaVersion overrides kafka cluster version on sarama library
+	// ForceKafkaVersion overrides kafka cluster version on sarama library.
 	ForceKafkaVersion *sarama.KafkaVersion
+	// Logger is used to print some Kamux's information. Golang's log package is used as default.
+	Logger Logger
 }
 
 // Kamux is the main object
@@ -79,22 +81,25 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 
 	// Check configuration
 	if config == nil {
-		return nil, errors.New("Kamux: configuration object is missing")
+		return nil, errors.New("kamux: configuration object is missing")
 	}
 	if len(config.Brokers) == 0 {
-		return nil, errors.New("Kamux: no kafka brokers specified")
+		return nil, errors.New("kamux: no kafka brokers specified")
 	}
 	if config.User == "" || config.Password == "" {
-		return nil, errors.New("Kamux: no kafka user or password specified")
+		return nil, errors.New("kamux: no kafka user or password specified")
 	}
 	if len(config.Topics) == 0 {
-		return nil, errors.New("Kamux: no kafka consuming topics specified")
+		return nil, errors.New("kamux: no kafka consuming topics specified")
 	}
 	if config.Handler == nil {
-		return nil, errors.New("Kamux: no handler specified")
+		return nil, errors.New("kamux: no handler specified")
 	}
 	if config.MessagesBufferSize == 0 {
 		config.MessagesBufferSize = 10000
+	}
+	if config.Logger == nil {
+		config.Logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
 	// Init object with configuration
@@ -139,18 +144,18 @@ func (kamux *Kamux) Launch() (err error) {
 
 	// PreRun
 	if kamux.Config.PreRun != nil {
-		log.Printf("[KAMUX     ] Executing PreRun function defined in configuration")
+		kamux.Config.Logger.Printf("[KAMUX] Executing PreRun function defined in configuration")
 
 		err = kamux.Config.PreRun(kamux)
 		if err != nil {
-			log.Printf("[KAMUX     ] Fail to exec PreRun function : %s", err)
+			kamux.Config.Logger.Printf("[KAMUX] Fail to exec PreRun function : %s", err)
 			kamux.globalLock.Unlock()
 			return err
 		}
 	}
 
 	// Init kafka client
-	log.Printf("[KAMUX     ] Connecting on kafka on brokers %v with user %s", kamux.Config.Brokers, kamux.ConsumerConfig.Net.SASL.User)
+	kamux.Config.Logger.Printf("[KAMUX] Connecting on kafka on brokers %v with user %s", kamux.Config.Brokers, kamux.ConsumerConfig.Net.SASL.User)
 	kamux.kafkaClient, err = sarama.NewClient(kamux.Config.Brokers, kamux.ConsumerConfig)
 	if err != nil {
 		kamux.globalLock.Unlock()
@@ -158,7 +163,7 @@ func (kamux *Kamux) Launch() (err error) {
 	}
 
 	// Init kafka consumer
-	log.Printf("[KAMUX     ] Using consumer group %s on topics : %v", kamux.Config.ConsumerGroup, kamux.Config.Topics)
+	kamux.Config.Logger.Printf("[KAMUX] Using consumer group %s on topics : %v", kamux.Config.ConsumerGroup, kamux.Config.Topics)
 	kamux.kafkaConsumer, err = sarama.NewConsumerGroupFromClient(kamux.Config.ConsumerGroup, kamux.kafkaClient)
 	if err != nil {
 		kamux.globalLock.Unlock()
@@ -178,7 +183,7 @@ func (kamux *Kamux) Launch() (err error) {
 			// See: https://github.com/Shopify/sarama/blob/master/consumer_group.go#L41
 			err := kamux.kafkaConsumer.Consume(ctx, kamux.Config.Topics, kamux)
 			if err != nil && err != sarama.ErrClosedConsumerGroup {
-				log.Panicf("Error from consumer: %v", err)
+				kamux.Config.Logger.Panicf("[KAMUX] Error from consumer: %v", err)
 			}
 
 			// check if context was cancelled, signaling that the consumer should stop
@@ -196,14 +201,14 @@ func (kamux *Kamux) Launch() (err error) {
 
 	kamux.launched = true
 	kamux.globalLock.Unlock()
-	log.Printf("[KAMUX     ] Kamux is now ready. All consumers are started")
+	kamux.Config.Logger.Printf("[KAMUX] Kamux is now ready. All consumers are started")
 
 	// Handle errors, sigterms and ctx cancellation
 	kamux.handleErrorsAndNotifications(ctx)
 	cancel()
 	wg.Wait()
 
-	log.Printf("[KAMUX     ] Kamux is now fully stopped")
+	kamux.Config.Logger.Printf("[KAMUX] Kamux is now fully stopped")
 	return kamux.err
 }
 
@@ -224,45 +229,45 @@ func (kamux *Kamux) StopWithError(err error) error {
 	kamux.err = err
 
 	// Stop consumer: no more messages to be available
-	log.Printf("[KAMUX     ] Closing kafka consumer group")
+	kamux.Config.Logger.Printf("[KAMUX] Closing kafka consumer group")
 	if kamux.kafkaConsumer != nil {
 		err = kamux.kafkaConsumer.Close()
 		if err != nil {
 			return err
 		}
 	}
-	log.Printf("[KAMUX     ] -> Success")
+	kamux.Config.Logger.Printf("[KAMUX] -> Success")
 
 	return nil
 }
 
 func (kamux *Kamux) handleErrorsAndNotifications(ctx context.Context) {
 	// Listen to SIGINT and SIGTERM
-	log.Printf("[KAMUX     ] Listening for notifications and system signals")
+	kamux.Config.Logger.Printf("[KAMUX] Listening for notifications and system signals")
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
 	case err := <-kamux.kafkaConsumer.Errors():
 		if err != nil {
-			log.Printf("[KAMUX     ] Error on kafka consumer : %s", err)
+			kamux.Config.Logger.Printf("[KAMUX] Error on kafka consumer : %s", err)
 
 			err = kamux.StopWithError(err)
 			if err != nil {
-				log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
+				kamux.Config.Logger.Printf("[KAMUX] Fail to stop kamux: %s", err)
 			}
 		}
 	case sig := <-sigs:
-		log.Printf("[KAMUX     ] Got a %s signal. Stopping gracefully....", sig)
+		kamux.Config.Logger.Printf("[KAMUX] Got a %s signal. Stopping gracefully....", sig)
 
 		err := kamux.Stop()
 		if err != nil {
-			log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
+			kamux.Config.Logger.Printf("[KAMUX] Fail to stop kamux: %s", err)
 		}
 	case <-ctx.Done():
 		err := kamux.Stop()
 		if err != nil {
-			log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
+			kamux.Config.Logger.Printf("[KAMUX] Fail to stop kamux: %s", err)
 		}
 	}
 }
@@ -281,11 +286,11 @@ func (kamux *Kamux) Setup(sarama.ConsumerGroupSession) (err error) {
 // but before the offsets are committed for the very last time.
 func (kamux *Kamux) Cleanup(sarama.ConsumerGroupSession) (err error) {
 	if kamux.Config.PostRun != nil {
-		log.Printf("[KAMUX     ] Executing PostRun function defined in configuration")
+		kamux.Config.Logger.Printf("[KAMUX] Executing PostRun function defined in configuration")
 
 		err = kamux.Config.PostRun(kamux)
 		if err != nil {
-			log.Printf("[KAMUX     ] Fail to exec PostRun function : %s", err)
+			kamux.Config.Logger.Printf("[KAMUX] Fail to exec PostRun function : %s", err)
 			return err
 		}
 	}
@@ -302,7 +307,7 @@ func (kamux *Kamux) ConsumeClaim(session sarama.ConsumerGroupSession, claim sara
 	// The `ConsumeClaim` itself is called within a goroutine, see:
 	// https://github.com/Shopify/sarama/blob/master/consumer_group.go#L27-L29
 
-	log.Printf("[KAMUX     ] Begin processing on topic %s and partition %d", claim.Topic(), claim.Partition())
+	kamux.Config.Logger.Printf("[KAMUX] Begin processing on topic %s and partition %d", claim.Topic(), claim.Partition())
 
 	for message := range claim.Messages() {
 
@@ -325,7 +330,6 @@ func (kamux *Kamux) ConsumeClaim(session sarama.ConsumerGroupSession, claim sara
 		}
 	}
 
-	log.Printf("[KAMUX     ] Closed processing on topic %s and partition %d", claim.Topic(), claim.Partition())
-
+	kamux.Config.Logger.Printf("[KAMUX] Closed processing on topic %s and partition %d", claim.Topic(), claim.Partition())
 	return nil
 }
