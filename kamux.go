@@ -67,6 +67,7 @@ type Kamux struct {
 	globalLock    *sync.RWMutex
 	kafkaClient   sarama.Client
 	kafkaConsumer sarama.ConsumerGroup
+	ready         chan bool
 	launched      bool
 	err           error
 }
@@ -138,7 +139,6 @@ func (kamux *Kamux) Launch() (err error) {
 
 	// PreRun
 	if kamux.Config.PreRun != nil {
-
 		log.Printf("[KAMUX     ] Executing PreRun function defined in configuration")
 
 		err = kamux.Config.PreRun(kamux)
@@ -165,7 +165,7 @@ func (kamux *Kamux) Launch() (err error) {
 		return
 	}
 
-	ready := make(chan bool)
+	kamux.ready = make(chan bool)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var wg sync.WaitGroup
@@ -176,7 +176,8 @@ func (kamux *Kamux) Launch() (err error) {
 			// The "Consume" method should be called inside infinite loop
 			// When a rebalance happens we need to recreate the consumer sessions to get the new claims
 			// See: https://github.com/Shopify/sarama/blob/master/consumer_group.go#L41
-			if err := kamux.kafkaConsumer.Consume(ctx, kamux.Config.Topics, kamux); err != nil {
+			err := kamux.kafkaConsumer.Consume(ctx, kamux.Config.Topics, kamux)
+			if err != nil && err != sarama.ErrClosedConsumerGroup {
 				log.Panicf("Error from consumer: %v", err)
 			}
 
@@ -186,12 +187,13 @@ func (kamux *Kamux) Launch() (err error) {
 			}
 
 			// Reallocating the channel unblocks goroutines waiting for it
-			ready = make(chan bool)
+			kamux.ready = make(chan bool)
 		}
 	}()
 
 	// Wait for the consumer to be ready
-	<-ready
+	<-kamux.ready
+
 	kamux.launched = true
 	kamux.globalLock.Unlock()
 	log.Printf("[KAMUX     ] Kamux is now ready. All consumers are started")
@@ -235,14 +237,12 @@ func (kamux *Kamux) StopWithError(err error) error {
 }
 
 func (kamux *Kamux) handleErrorsAndNotifications(ctx context.Context) {
-
 	// Listen to SIGINT and SIGTERM
 	log.Printf("[KAMUX     ] Listening for notifications and system signals")
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	select {
-
 	case err := <-kamux.kafkaConsumer.Errors():
 		if err != nil {
 			log.Printf("[KAMUX     ] Error on kafka consumer : %s", err)
@@ -251,10 +251,7 @@ func (kamux *Kamux) handleErrorsAndNotifications(ctx context.Context) {
 			if err != nil {
 				log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
 			}
-
-			return
 		}
-
 	case sig := <-sigs:
 		log.Printf("[KAMUX     ] Got a %s signal. Stopping gracefully....", sig)
 
@@ -262,15 +259,12 @@ func (kamux *Kamux) handleErrorsAndNotifications(ctx context.Context) {
 		if err != nil {
 			log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
 		}
-
-		return
 	case <-ctx.Done():
 		err := kamux.Stop()
 		if err != nil {
 			log.Printf("[KAMUX     ] Fail to stop kamux: %s", err)
 		}
 	}
-
 }
 
 //
@@ -279,16 +273,14 @@ func (kamux *Kamux) handleErrorsAndNotifications(ctx context.Context) {
 
 // Setup is run at the beginning of a new session, before ConsumeClaim.
 func (kamux *Kamux) Setup(sarama.ConsumerGroupSession) (err error) {
+	close(kamux.ready) // Mark the consumer as ready
 	return nil
 }
 
 // Cleanup is run at the end of a session, once all ConsumeClaim goroutines have exites
 // but before the offsets are committed for the very last time.
 func (kamux *Kamux) Cleanup(sarama.ConsumerGroupSession) (err error) {
-
-	// Exec PostRun
 	if kamux.Config.PostRun != nil {
-
 		log.Printf("[KAMUX     ] Executing PostRun function defined in configuration")
 
 		err = kamux.Config.PostRun(kamux)
