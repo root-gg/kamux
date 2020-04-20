@@ -72,6 +72,7 @@ type Kamux struct {
 	ready         chan bool
 	launched      bool
 	err           error
+	runningWaiter *sync.WaitGroup
 }
 
 // NewKamux is the constructor of the ConsumerProducer
@@ -113,6 +114,7 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 	kamux.ConsumerConfig.Net.TLS.Enable = true
 	kamux.ConsumerConfig.Consumer.Return.Errors = true
 	kamux.globalLock = new(sync.RWMutex)
+	kamux.runningWaiter = new(sync.WaitGroup)
 
 	// Force kafka version
 	if kamux.Config.ForceKafkaVersion != nil {
@@ -223,6 +225,9 @@ func (kamux *Kamux) StopWithError(err error) error {
 	kamux.globalLock.Lock()
 	defer kamux.globalLock.Unlock()
 
+	// Wait for current handler to finish
+	kamux.runningWaiter.Wait()
+
 	// Set error
 	kamux.err = err
 
@@ -308,23 +313,30 @@ func (kamux *Kamux) ConsumeClaim(session sarama.ConsumerGroupSession, claim sara
 	kamux.Config.Logger.Printf("[KAMUX] Begin processing on topic %s and partition %d", claim.Topic(), claim.Partition())
 
 	for message := range claim.Messages() {
+		err := func() error {
+			kamux.runningWaiter.Add(1)
+			defer kamux.runningWaiter.Done()
+			// Execute handler
+			err = kamux.Config.Handler(message)
+			if err != nil {
+				if kamux.Config.ErrHandler != nil {
+					err = kamux.Config.ErrHandler(err, message)
+				}
 
-		// Execute handler
-		err = kamux.Config.Handler(message)
+				// Still error after error handler ?
+				if err != nil && kamux.Config.StopOnError {
+					return err
+				}
+			}
+
+			// Mark offset if asked
+			if kamux.Config.MarkOffsets {
+				session.MarkMessage(message, "")
+			}
+			return nil
+		}()
 		if err != nil {
-			if kamux.Config.ErrHandler != nil {
-				err = kamux.Config.ErrHandler(err, message)
-			}
-
-			// Still error after error handler ?
-			if err != nil && kamux.Config.StopOnError {
-				return kamux.StopWithError(err)
-			}
-		}
-
-		// Mark offset if asked
-		if kamux.Config.MarkOffsets {
-			session.MarkMessage(message, "")
+			return kamux.StopWithError(err)
 		}
 	}
 
