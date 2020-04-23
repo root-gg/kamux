@@ -71,7 +71,7 @@ type Kamux struct {
 	kafkaConsumer sarama.ConsumerGroup
 	ready         chan bool
 	launched      bool
-	err           chan error
+	err           error
 }
 
 // NewKamux is the constructor of the ConsumerProducer
@@ -104,7 +104,6 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 
 	// Init object with configuration
 	kamux = new(Kamux)
-	kamux.err = make(chan error, 1)
 	kamux.Config = config
 	kamux.ConsumerConfig = sarama.NewConfig()
 	kamux.ConsumerConfig.ChannelBufferSize = config.MessagesBufferSize
@@ -203,67 +202,70 @@ func (kamux *Kamux) Launch() (err error) {
 	kamux.Config.Logger.Printf("[KAMUX] Kamux is now ready. All consumers are started")
 
 	// Handle errors, sigterms and ctx cancellation
-	err = kamux.handleErrorsAndNotifications(ctx)
+	kamux.handleErrorsAndNotifications(ctx)
 	cancel()
 	wg.Wait()
 
 	kamux.Config.Logger.Printf("[KAMUX] Kamux is now fully stopped")
-	return err
+	return kamux.err
 }
 
 // Stop will stop processing with no error
 func (kamux *Kamux) Stop() error {
+	return kamux.StopWithError(nil)
+}
+
+// StopWithError will stop processing
+// with error passed as argument
+func (kamux *Kamux) StopWithError(err error) error {
+
 	// Launch once
 	kamux.globalLock.Lock()
 	defer kamux.globalLock.Unlock()
 
+	// Set error
+	kamux.err = err
+
 	// Stop consumer: no more messages to be available
 	kamux.Config.Logger.Printf("[KAMUX] Closing kafka consumer group")
 	if kamux.kafkaConsumer != nil {
-		err := kamux.kafkaConsumer.Close()
+		err = kamux.kafkaConsumer.Close()
 		if err != nil {
 			return err
 		}
 	}
 	kamux.Config.Logger.Printf("[KAMUX] -> Success")
+
 	return nil
 }
 
-// StopWithError will stop processing with error passed as argument
-func (kamux *Kamux) StopWithError(err error) {
-	kamux.err <- err
-}
-
-func (kamux *Kamux) handleErrorsAndNotifications(ctx context.Context) error {
+func (kamux *Kamux) handleErrorsAndNotifications(ctx context.Context) {
 	// Listen to SIGINT and SIGTERM
 	kamux.Config.Logger.Printf("[KAMUX] Listening for notifications and system signals")
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	for {
-		select {
-		case err := <-kamux.kafkaConsumer.Errors():
+	select {
+	case err := <-kamux.kafkaConsumer.Errors():
+		if err != nil {
+			kamux.Config.Logger.Printf("[KAMUX] Error on kafka consumer : %s", err)
+
+			err = kamux.StopWithError(err)
 			if err != nil {
-				kamux.Config.Logger.Printf("[KAMUX] Error on kafka consumer : %s", err)
-				kamux.StopWithError(err)
+				kamux.Config.Logger.Printf("[KAMUX] Fail to stop kamux: %s", err)
 			}
+		}
+	case sig := <-sigs:
+		kamux.Config.Logger.Printf("[KAMUX] Got a %s signal. Stopping gracefully....", sig)
 
-		case sig := <-sigs:
-			kamux.Config.Logger.Printf("[KAMUX] Got a %s signal. Stopping gracefully....", sig)
-			return kamux.Stop()
-
-		case <-ctx.Done():
-			return kamux.Stop()
-
-		case err := <-kamux.err:
-			if err != nil {
-				kamux.Config.Logger.Printf("[KAMUX] A consumer asked for exit with error: %s", err)
-				if err := kamux.Stop(); err != nil {
-					// This is not the main error
-					kamux.Config.Logger.Printf("[KAMUX] Fail to stop kamux: %s", err)
-				}
-				return err
-			}
+		err := kamux.Stop()
+		if err != nil {
+			kamux.Config.Logger.Printf("[KAMUX] Fail to stop kamux: %s", err)
+		}
+	case <-ctx.Done():
+		err := kamux.Stop()
+		if err != nil {
+			kamux.Config.Logger.Printf("[KAMUX] Fail to stop kamux: %s", err)
 		}
 	}
 }
@@ -316,8 +318,7 @@ func (kamux *Kamux) ConsumeClaim(session sarama.ConsumerGroupSession, claim sara
 
 			// Still error after error handler ?
 			if err != nil && kamux.Config.StopOnError {
-				kamux.StopWithError(err)
-				return nil
+				return err
 			}
 		}
 
