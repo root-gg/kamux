@@ -318,7 +318,7 @@ func (kamux *Kamux) ConsumeClaim(session sarama.ConsumerGroupSession, claim sara
 
 			// Still error after error handler ?
 			if err != nil && kamux.Config.StopOnError {
-				return kamux.StopWithError(err)
+				return err
 			}
 		}
 
