@@ -37,6 +37,9 @@ type Config struct {
 	Topics []string
 	// ConsumerGroup is the name of the consumer group to use.
 	ConsumerGroup string
+	// The InitialOffset to use if no offset was previously committed.
+	// Should be sarama.OffsetNewest or sarama.OffsetOldest. Defaults to sarama.OffsetNewest.
+	InitialOffset int64
 	// Handler is the function executed on each kafka message.
 	Handler func(*sarama.ConsumerMessage) error
 	// ErrHandler is the function executed on Handler's error used to trying to rescue the error.
@@ -112,6 +115,9 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 	kamux.ConsumerConfig.Net.SASL.Password = kamux.Config.Password
 	kamux.ConsumerConfig.Net.TLS.Enable = true
 	kamux.ConsumerConfig.Consumer.Return.Errors = true
+	if kamux.Config.InitialOffset < 0 {
+		kamux.ConsumerConfig.Consumer.Offsets.Initial = kamux.Config.InitialOffset
+	}
 	kamux.globalLock = new(sync.RWMutex)
 
 	// Force kafka version
