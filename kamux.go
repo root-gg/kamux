@@ -9,7 +9,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/Shopify/sarama"
+	"github.com/IBM/sarama"
 )
 
 /*
@@ -131,11 +131,10 @@ func NewKamux(config *Config) (kamux *Kamux, err error) {
 // Launch will begin the processing of the kafka messages
 // It can be launched only once.
 // It will :
-//  	- Connect to kafka using credentials provided in configuration
-//		- Listen to consumer group notifications (rebalance,...)
-//		- Listen to consumer errors, and stop properly in case of one
-//		- Listen to system SIGINT to stop properly
-//
+//   - Connect to kafka using credentials provided in configuration
+//   - Listen to consumer group notifications (rebalance,...)
+//   - Listen to consumer errors, and stop properly in case of one
+//   - Listen to system SIGINT to stop properly
 func (kamux *Kamux) Launch() (err error) {
 
 	// Launch only once
